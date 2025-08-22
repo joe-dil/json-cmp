@@ -10,47 +10,6 @@ JsonCompletionSource.__index = JsonCompletionSource
 -- Maximum number of error notifications to display
 local MAX_ERRORS = 10
 
--- Constructor
-function JsonCompletionSource.new(opts)
-    local self = setmetatable({}, JsonCompletionSource)
-    self.name = opts.name or 'json_completions'
-    self.priority = opts.priority or 1000
-    self.file_paths = opts.file_paths or {}
-    self.columns = {}
-    self.file_mtimes = {}
-    self.error_count = 0
-    
-    -- JSON field mapping configurations
-    self.field_mappings = {
-        -- Define which JSON field is used for completion label
-        label_field = opts.label_field or "column",
-        
-        -- Define which JSON field is used for type information
-        type_field = opts.type_field or "fieldType.type",
-        
-        -- Define which JSON field is used for documentation
-        doc_field = opts.doc_field or "fieldType.options",
-        
-        -- Define which JSON field is used as a fallback for documentation
-        fallback_doc_field = opts.fallback_doc_field or "type",
-        
-        -- Define which JSON field is used for additional details
-        detail_field = opts.detail_field or "type",
-        
-        -- Define which JSON field contains the fields array
-        fields_container = opts.fields_container or "fields"
-    }
-    
-    -- Format strings for documentation
-    self.format = {
-        type_format = opts.type_format or "`%s`",
-        doc_format = opts.doc_format or "*%s*"
-    }
-    
-    self:load_columns()
-    return self
-end
-
 -- Helper function to handle notifications with a limit
 local function notify(self, message, level)
     if self.error_count < MAX_ERRORS then
@@ -76,6 +35,62 @@ local function get_nested_field(obj, path)
     end
     
     return current
+end
+
+-- Helper function to try multiple paths and return first non-nil value
+local function try_paths(obj, paths)
+    if type(paths) == "string" then
+        return get_nested_field(obj, paths)
+    end
+    
+    for _, path in ipairs(paths) do
+        local value = get_nested_field(obj, path)
+        if value ~= nil then
+            return value
+        end
+    end
+    return nil
+end
+
+-- Constructor
+function JsonCompletionSource.new(opts)
+    local self = setmetatable({}, JsonCompletionSource)
+    self.name = opts.name or 'json_completions'
+    self.priority = opts.priority or 1000
+    self.file_paths = opts.file_paths or {}
+    self.columns = {}
+    self.file_mtimes = {}
+    self.error_count = 0
+    
+    -- JSON field mapping configurations
+    self.field_mappings = {
+        -- Define which JSON field is used for completion label
+        label_field = opts.label_field or {"column", "name", "label"},
+        
+        -- Define which JSON field is used for type information
+        type_field = opts.type_field or {"fieldType.type", "type", "dataType"},
+        
+        -- Define which JSON field is used for documentation
+        doc_field = opts.doc_field or {"fieldType.options", "description", "doc"},
+        
+        -- Define which JSON field is used as a fallback for documentation
+        fallback_doc_field = opts.fallback_doc_field or {"type", "comment"},
+        
+        -- Define which JSON field is used for additional details
+        detail_field = opts.detail_field or {"type", "category"},
+        
+        -- Define which JSON field contains the fields array
+        fields_container = opts.fields_container or {"fields", "columns", "items"}
+    }
+    
+    -- Format strings for documentation
+    self.format = {
+        type_format = opts.type_format or "`%s`",
+        doc_format = opts.doc_format or "*%s*"
+    }
+    
+    self:load_columns()
+    return self
 end
 
 -- Load and parse the JSON files
@@ -117,11 +132,18 @@ function JsonCompletionSource:load_columns()
                     if not success then
                         notify(self, "Failed to parse JSON in " .. path .. ": " .. data, vim.log.levels.ERROR)
                     else
-                        -- Extract fields from the configured container
-                        local fields = get_nested_field(data, fields_container)
+                        -- Try each possible container field
+                        local fields = nil
+                        for _, container in ipairs(fields_container) do
+                            fields = get_nested_field(data, container)
+                            if fields and type(fields) == 'table' then
+                                break
+                            end
+                        end
+
                         if fields and type(fields) == 'table' then
                             for _, field in ipairs(fields) do
-                                local column_name = get_nested_field(field, label_field)
+                                local column_name = try_paths(field, label_field)
                                 
                                 if column_name and type(column_name) == 'string' then
                                     -- Initialize the column entry if it doesn't exist
@@ -130,12 +152,12 @@ function JsonCompletionSource:load_columns()
                                             documentation = '',
                                             sources = {},
                                             -- Get type information from the configured path
-                                            type = get_nested_field(field, type_field) or ''
+                                            type = try_paths(field, type_field) or ''
                                         }
                                     end
 
                                     -- Append the current source type
-                                    local detail_value = get_nested_field(data, detail_field)
+                                    local detail_value = try_paths(data, detail_field)
                                     if detail_value and type(detail_value) == 'string' then
                                         table.insert(column_map[column_name].sources, detail_value)
                                     else
@@ -143,7 +165,7 @@ function JsonCompletionSource:load_columns()
                                     end
 
                                     -- Update documentation based on configured doc field
-                                    local doc_value = get_nested_field(field, doc_field)
+                                    local doc_value = try_paths(field, doc_field)
                                     if doc_value then
                                         if type(doc_value) == 'table' then
                                             column_map[column_name].documentation = table.concat(doc_value, ', ')
@@ -154,7 +176,7 @@ function JsonCompletionSource:load_columns()
 
                                     -- Fallback: if documentation is empty but there's a fallback field
                                     if column_map[column_name].documentation == '' then
-                                        local fallback_value = get_nested_field(field, fallback_doc_field)
+                                        local fallback_value = try_paths(field, fallback_doc_field)
                                         if fallback_value and type(fallback_value) == 'string' then
                                             column_map[column_name].documentation = fallback_value
                                         end
@@ -162,13 +184,13 @@ function JsonCompletionSource:load_columns()
                                 else
                                     notify(self,
                                     "Invalid field entry in " .. path ..
-                                    ", missing '" .. label_field .. "' or it is not a string.",
+                                    ", missing label field or it is not a string.",
                                     vim.log.levels.WARN
                                     )
                                 end
                             end
                         else
-                            notify(self, "No '" .. fields_container .. "' array found in " .. path, vim.log.levels.WARN)
+                            notify(self, "No valid fields container found in " .. path, vim.log.levels.WARN)
                         end
                     end
                 end
@@ -201,20 +223,14 @@ function JsonCompletionSource:load_columns()
     end
 end
 
--- Refresh method to reload the JSON files (called by autocmd)
+-- Get completions for the current context
+function JsonCompletionSource:get_completions(_, callback)
+    callback(self.columns)
+end
+
+-- Refresh the source
 function JsonCompletionSource:refresh()
     self:load_columns()
 end
 
--- Required 'complete' method
-function JsonCompletionSource:complete(_, callback)
-    callback({
-        items = self.columns,
-        isIncomplete = false,
-    })
-end
-
--- Return a constructor function
-return function(opts)
-    return JsonCompletionSource.new(opts)
-end 
+return JsonCompletionSource 

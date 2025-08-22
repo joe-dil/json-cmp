@@ -42,105 +42,159 @@ function M.get_json_files(dir, pattern)
   return paths
 end
 
+-- Default mapping configurations for common formats
+local DEFAULT_MAPPINGS = {
+  generic = {
+    labelField = {"column", "name", "label"},
+    typeField = {"fieldType.type", "type", "dataType"},
+    docField = {"fieldType.options", "description", "doc"},
+    fallbackDocField = {"type", "comment"},
+    detailField = {"type", "category"},
+    fieldsContainer = {"fields", "columns", "items"}
+  },
+  swagger = {
+    labelField = {"name"},
+    typeField = {"schema.type", "type"},
+    docField = {"description"},
+    fallbackDocField = {"summary"},
+    detailField = {"in"},
+    fieldsContainer = {"parameters"}
+  },
+  json_schema = {
+    labelField = {"name", "key"},
+    typeField = {"type"},
+    docField = {"description"},
+    fallbackDocField = {"title"},
+    detailField = {"format"},
+    fieldsContainer = {"properties"}
+  }
+}
+
 -- Process configuration with defaults
 function M.setup(opts)
   -- Handle simplified case where opts is just a list of paths
-  if type(opts) == "table" and opts.paths ~= nil and not opts.autoRegister then
-    opts = { sources = { jsonFiles = { paths = opts.paths } } }
+  if type(opts) == "table" and opts.paths ~= nil and not opts.autoRegister and not opts.sources then
+    opts = { sources = {{ jsonFiles = { paths = opts.paths } }} }
   end
 
   opts = opts or {}
   
-  -- Set defaults
-  local options = {
-    autoRegister = opts.autoRegister ~= nil and opts.autoRegister or true,  -- Default to auto-register
-    sourceName = opts.sourceName or "json_completions",
-    priority = opts.priority or 1000,
-    sources = {
-      enabled = opts.sources and opts.sources.enabled ~= nil and opts.sources.enabled or true,
+  -- Handle legacy single source format
+  if opts.sources and opts.sources.jsonFiles and not opts.sources[1] then
+    opts.sources = { opts.sources }
+  end
+  
+  -- If no sources specified, create empty array
+  if not opts.sources then
+    opts.sources = {}
+  end
+  
+  local registered_sources = {}
+  local source_instances = {}
+  
+  -- Process each source configuration
+  for i, source_config in ipairs(opts.sources) do
+    local source_name = source_config.name or (opts.sourceName or "json_completions") .. (i > 1 and "_" .. i or "")
+    
+    -- Set defaults for this source
+    local source_options = {
+      autoRegister = opts.autoRegister ~= nil and opts.autoRegister or true,
+      sourceName = source_name,
+      priority = source_config.priority or opts.priority or 1000,
       jsonFiles = {
-        paths = opts.sources and opts.sources.jsonFiles and opts.sources.jsonFiles.paths or {},
-        pattern = opts.sources and opts.sources.jsonFiles and opts.sources.jsonFiles.pattern or "%.json$"
+        paths = source_config.jsonFiles and source_config.jsonFiles.paths or source_config.paths or {},
+        pattern = source_config.jsonFiles and source_config.jsonFiles.pattern or source_config.pattern or "%.json$"
       },
-      watchDir = opts.sources and opts.sources.watchDir ~= nil and opts.sources.watchDir or true,  -- Default to true
-      watchDirPath = opts.sources and opts.sources.watchDirPath or nil
-    },
-    formatting = {
-      typeFormat = opts.formatting and opts.formatting.typeFormat or "`%s`",
-      docFormat = opts.formatting and opts.formatting.docFormat or "*%s*"
-    },
-    mapping = {
-      labelField = opts.mapping and opts.mapping.labelField or "column",
-      typeField = opts.mapping and opts.mapping.typeField or "fieldType.type",
-      docField = opts.mapping and opts.mapping.docField or "fieldType.options",
-      fallbackDocField = opts.mapping and opts.mapping.fallbackDocField or "type",
-      detailField = opts.mapping and opts.mapping.detailField or "type",
-      fieldsContainer = opts.mapping and opts.mapping.fieldsContainer or "fields"
+      watchDir = source_config.watchDir ~= nil and source_config.watchDir or true,
+      watchDirPath = source_config.watchDirPath,
+      formatting = {
+        typeFormat = source_config.formatting and source_config.formatting.typeFormat or 
+                    opts.formatting and opts.formatting.typeFormat or "`%s`",
+        docFormat = source_config.formatting and source_config.formatting.docFormat or 
+                   opts.formatting and opts.formatting.docFormat or "*%s*"
+      }
     }
-  }
-  
-  -- Get file paths from directories if specified
-  if options.sources.enabled and options.sources.jsonFiles.paths and #options.sources.jsonFiles.paths > 0 then
+    
+    -- Handle mapping configuration with presets
+    local mapping_preset = source_config.preset or "generic"
+    local base_mapping = DEFAULT_MAPPINGS[mapping_preset] or DEFAULT_MAPPINGS.generic
+    
+    source_options.mapping = {}
+    for field_name, default_value in pairs(base_mapping) do
+      source_options.mapping[field_name] = 
+        (source_config.mapping and source_config.mapping[field_name]) or
+        (opts.mapping and opts.mapping[field_name]) or
+        default_value
+    end
+    
+    -- Get file paths from directories if specified
     local processed_paths = {}
-    
-    for _, path_or_dir in ipairs(options.sources.jsonFiles.paths) do
-      -- Check if it's a directory
-      local stat = uv.fs_stat(path_or_dir)
-      if stat and stat.type == "directory" then
-        -- Get all JSON files in this directory
-        local dir_files = M.get_json_files(path_or_dir, options.sources.jsonFiles.pattern)
-        for _, file_path in ipairs(dir_files) do
-          table.insert(processed_paths, file_path)
+    if source_options.jsonFiles.paths and #source_options.jsonFiles.paths > 0 then
+      for _, path_or_dir in ipairs(source_options.jsonFiles.paths) do
+        -- Check if it's a directory
+        local stat = uv.fs_stat(path_or_dir)
+        if stat and stat.type == "directory" then
+          -- Get all JSON files in this directory
+          local dir_files = M.get_json_files(path_or_dir, source_options.jsonFiles.pattern)
+          for _, file_path in ipairs(dir_files) do
+            table.insert(processed_paths, file_path)
+          end
+        else
+          -- Assume it's a file path
+          table.insert(processed_paths, path_or_dir)
         end
-      else
-        -- Assume it's a file path
-        table.insert(processed_paths, path_or_dir)
       end
     end
     
-    options.sources.jsonFiles.processed_paths = processed_paths
-  else
-    options.sources.jsonFiles.processed_paths = {}
-  end
-  
-  -- Initialize the source with processed options
-  source_instance = require('json-cmp.source')({
-    name = options.sourceName,
-    priority = options.priority,
-    file_paths = options.sources.jsonFiles.processed_paths,
-    label_field = options.mapping.labelField,
-    type_field = options.mapping.typeField,
-    doc_field = options.mapping.docField,
-    fallback_doc_field = options.mapping.fallbackDocField,
-    detail_field = options.mapping.detailField,
-    fields_container = options.mapping.fieldsContainer,
-    type_format = options.formatting.typeFormat,
-    doc_format = options.formatting.docFormat
-  })
-  
-  -- Auto-register if requested
-  if options.autoRegister then
-    require('cmp').register_source(options.sourceName, source_instance)
-  end
-  
-  -- Setup watch dir if enabled
-  if options.sources.watchDir then
-    local watch_dir = options.sources.watchDirPath
-    if not watch_dir and #options.sources.jsonFiles.paths > 0 then
-      -- Use the first directory as watch dir if not specified
-      local first_path = options.sources.jsonFiles.paths[1]
-      local stat = uv.fs_stat(first_path)
-      if stat and stat.type == "directory" then
-        watch_dir = first_path
-      end
+    -- Initialize the source with processed options
+    local source_instance = require('json-cmp.source')({
+      name = source_options.sourceName,
+      priority = source_options.priority,
+      file_paths = processed_paths,
+      label_field = source_options.mapping.labelField,
+      type_field = source_options.mapping.typeField,
+      doc_field = source_options.mapping.docField,
+      fallback_doc_field = source_options.mapping.fallbackDocField,
+      detail_field = source_options.mapping.detailField,
+      fields_container = source_options.mapping.fieldsContainer,
+      type_format = source_options.formatting.typeFormat,
+      doc_format = source_options.formatting.docFormat
+    })
+    
+    table.insert(source_instances, source_instance)
+    
+    -- Auto-register if requested
+    if source_options.autoRegister then
+      require('cmp').register_source(source_options.sourceName, source_instance)
+      table.insert(registered_sources, source_options.sourceName)
     end
     
-    if watch_dir then
-      M.setup_watch_dir(watch_dir, source_instance, options.sources.jsonFiles.pattern)
+    -- Setup watch dir if enabled
+    if source_options.watchDir then
+      local watch_dir = source_options.watchDirPath
+      if not watch_dir and #source_options.jsonFiles.paths > 0 then
+        -- Use the first directory as watch dir if not specified
+        local first_path = source_options.jsonFiles.paths[1]
+        local stat = uv.fs_stat(first_path)
+        if stat and stat.type == "directory" then
+          watch_dir = first_path
+        end
+      end
+      
+      if watch_dir then
+        M.setup_watch_dir(watch_dir, source_instance, source_options.jsonFiles.pattern)
+      end
     end
   end
   
-  return source_instance
+  -- Store reference to all instances
+  source_instance = source_instances[1] -- For backward compatibility
+  
+  -- Return info about registered sources
+  return {
+    sources = source_instances,
+    registered = registered_sources
+  }
 end
 
 return M 
