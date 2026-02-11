@@ -29,7 +29,7 @@ local MAX_ERRORS = 10
 -- Constructor
 function CustomColumnsSource.new(opts)
     local self = setmetatable({}, CustomColumnsSource)
-    self.name = opts.name or 'columns'
+    self.name = opts.name or 'json_completions'
     self.priority = opts.priority or 1000
     self.error_count = 0
 
