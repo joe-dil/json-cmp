@@ -108,11 +108,10 @@ function CustomColumnsSource:load_columns()
                                         }
                                     end
 
-                                    -- Append the current source type
-                                    if data.type and type(data.type) == 'string' then
-                                        table.insert(column_map[field.column].sources, data.type)
-                                    else
-                                        table.insert(column_map[field.column].sources, "UnknownType")
+                                    -- Append the current source type (skip duplicates)
+                                    local src = (data.type and type(data.type) == 'string') and data.type or "UnknownType"
+                                    if not vim.tbl_contains(column_map[field.column].sources, src) then
+                                        table.insert(column_map[field.column].sources, src)
                                     end
 
                                     -- Update documentation based on field.fieldType
