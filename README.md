@@ -1,104 +1,44 @@
 # json-cmp
 
-Neovim auto-completion for JSON schemas. Works with Swagger/OpenAPI docs, database schemas, and custom JSON formats.
+nvim-cmp source for completing values from local JSON files.
 
 ## Installation
 
 ```lua
+-- lazy.nvim
 {
-  "joe-dil/json-cmp",
-  dependencies = { "hrsh7th/nvim-cmp" },
-  opts = { paths = { "/path/to/json" } }
+  "hrsh7th/nvim-cmp",
+  dependencies = {
+    { "joe-dil/json-cmp" },
+    -- ... other deps
+  },
+  config = function()
+    local cmp = require("cmp")
+
+    local json_completions = require("json_completions")({
+      directory = vim.fn.stdpath("config") .. "/lua/data/completions",
+    })
+
+    cmp.register_source("json_completions", json_completions)
+
+    cmp.setup({
+      sources = {
+        { name = "json_completions", keyword_length = 3, max_item_count = 9 },
+        -- ... other sources
+      },
+    })
+  end,
 }
 ```
 
-## Quick Start
+## Options
 
-### Single Directory
-```lua
-require("json-cmp").setup({
-  paths = { "/path/to/json/files" }
-})
-```
-
-### Multiple Sources with Presets
-```lua
-require("json-cmp").setup({
-  sources = {
-    { name = "swagger", paths = { "/api/docs" }, preset = "swagger" },
-    { name = "db", paths = { "/db/schemas" }, preset = "generic" }
-  }
-})
-```
-
-## Presets
-
-- **`swagger`**: Swagger/OpenAPI parameters (`name`, `description`, `schema.type`)
-- **`generic`**: Standard schemas (`column`, `fieldType.type`, `fieldType.options`)  
-- **`json_schema`**: JSON Schema properties (`name`, `type`, `description`)
-
-## Swagger Example
-
-JSON:
-```json
-{
-  "paths": {
-    "/users": {
-      "get": {
-        "parameters": [
-          {
-            "name": "limit",
-            "description": "Max results",
-            "schema": { "type": "integer" }
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-Config:
-```lua
-require("json-cmp").setup({
-  sources = {
-    { name = "api", paths = { "/api/swagger" }, preset = "swagger" }
-  }
-})
-```
-
-## Advanced Configuration
-
-### Custom Field Mappings
-```lua
-require("json-cmp").setup({
-  sources = {
-    {
-      name = "custom",
-      paths = { "/path/to/schemas" },
-      mapping = {
-        labelField = {"name", "column"},
-        typeField = {"dataType", "type"},
-        docField = {"description"},
-        fieldsContainer = {"columns", "fields"}
-      }
-    }
-  }
-})
-```
-
-### Manual Registration
-```lua
-local result = require("json-cmp").setup({
-  autoRegister = false,
-  sources = {
-    { name = "my_source", paths = { "/path" } }
-  }
-})
-
--- Register manually
-require("cmp").register_source("my_source", result.sources[1])
-```
+| Option | Type | Description |
+|--------|------|-------------|
+| `directory` | `string` | Path to a directory — all `.json` files inside are loaded |
+| `file_paths` | `string[]` | Explicit list of `.json` file paths |
+| `name` | `string` | Source name (default: `"json_completions"`) |
+| `priority` | `number` | Completion priority (default: `1000`) |
 
 ## License
 
