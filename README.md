@@ -1,5 +1,3 @@
-# json-cmp
-
 nvim-cmp source for completing values from local JSON files.
 
 ## Installation
